@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <ctype.h>
+#include <time.h>
 #include "filesys.h"
 
 /*
@@ -111,8 +112,8 @@ void findDate(unsigned short *year,
 	int date;
 	date = RevByte(info[0],info[1]);
 
-	*year = ((date & MASK_YEAR)>> 9 )+1980;
-	*month = ((date & MASK_MONTH)>> 5);
+	*year = ((date & MASK_YEAR)>>9)+1980;
+	*month = ((date & MASK_MONTH)>>5);
 	*day = (date & MASK_DAY);
 }
 
@@ -125,9 +126,9 @@ void findTime(unsigned short *hour,
 	int time;
 	time = RevByte(info[0],info[1]);
 
-	*hour = ((time & MASK_HOUR )>>11);
-	*min = (time & MASK_MIN)>> 5;
-	*sec = (time & MASK_SEC) * 2;
+	*hour = ((time & MASK_HOUR)>>11);
+	*min = (time & MASK_MIN)>>5;
+	*sec = (time & MASK_SEC)<<1;
 }
 
 /*
@@ -172,7 +173,7 @@ int GetEntry(struct Entry *pentry)
 			count += ret;
 		}
 
-		/*命名格式化，主义结尾的'\0'*/
+		/*命名格式化，注意结尾的'\0'*/
 		for (i=0 ;i<=10;i++)
 			pentry->short_name[i] = buf[i];
 		pentry->short_name[i] = '\0';
@@ -368,6 +369,7 @@ int fd_cd(char *dir)
 		return 1;
 	}
 	//注意此处有内存泄露
+	//fixed by constroy 12.06.2015
 	pentry = (struct Entry*)malloc(sizeof(struct Entry));
 	
 	ret = ScanEntry(dir,pentry,1);
@@ -379,6 +381,7 @@ int fd_cd(char *dir)
 	}
 	dirno ++;
 	fatherdir[dirno] = curdir;
+	free(curdir);
 	curdir = pentry;
 	return 1;
 }
@@ -531,18 +534,24 @@ int fd_cf(char *filename,int size)
 
 	struct Entry *pentry;
 	int ret,i=0,cluster_addr,offset;
-	unsigned short cluster,clusterno[100];
+	unsigned short c_date,c_time,cluster,clusterno[100];
 	unsigned char c[DIR_ENTRY_SIZE];
 	int index,clustersize;
 	unsigned char buf[DIR_ENTRY_SIZE];
+	time_t t;
+	struct tm *tp;
+	
 	pentry = (struct Entry*)malloc(sizeof(struct Entry));
 
-
 	clustersize = (size / (CLUSTER_SIZE));
-
 	if(size % (CLUSTER_SIZE) != 0)
 		clustersize ++;
 
+	t = time(NULL);
+	tp = localtime(&t);
+	c_date = (tp->tm_year-80<<9) | (tp->tm_mon+1<<5) | (tp->tm_mday);
+	c_time = (tp->tm_hour<<11) | (tp->tm_min<<5) | (tp->tm_sec>>1);
+	
 	//扫描根目录，是否已存在该文件名
 	ret = ScanEntry(filename,pentry,0);
 	if (ret<0)
@@ -550,15 +559,13 @@ int fd_cf(char *filename,int size)
 		/*查询fat表，找到空白簇，保存在clusterno[]中*/
 		for(cluster=2;cluster<1000;cluster++)
 		{
-			index = cluster *2;
+			index = cluster * 2;
 			if(fatbuf[index]==0x00&&fatbuf[index+1]==0x00)
 			{
-				clusterno[i] = cluster;
+				clusterno[i++] = cluster;
 
-				i++;
 				if(i==clustersize)
 					break;
-
 			}
 
 		}
@@ -594,8 +601,8 @@ int fd_cf(char *filename,int size)
 				//看看条目是否可用（e5）或者是不是表示后面没有更多条目（00）
 				if(buf[0]!=0xe5&&buf[0]!=0x00)
 				{
-				  //buf[11]是attribute，但是感觉下面这个while循环并没有什么卵用。。。
-				  while(buf[11] == 0x0f)
+					//buf[11]是attribute，但是感觉下面这个while循环并没有什么卵用。。。
+					while(buf[11] == 0x0f)
 					{
 						if((ret = read(fd,buf,DIR_ENTRY_SIZE))<0)
 							perror("read root dir failed");
@@ -615,7 +622,13 @@ int fd_cf(char *filename,int size)
 					for(;i<=10;i++)
 						c[i]=' ';
 
-					c[11] = 0x01;
+					c[11] = 0x00;
+
+					/* write the time and date */
+					c[22] = c_time;
+					c[23] = c_time>>8;
+					c[24] = c_date;
+					c[25] = c_date>>8;
 
 					/*写第一簇的值*/
 					c[26] = (clusterno[0] &  0x00ff);
@@ -679,7 +692,12 @@ int fd_cf(char *filename,int size)
 					for(;i<=10;i++)
 						c[i]=' ';
 
-					c[11] = 0x01;
+					c[11] = 0x00;
+					
+					c[22] = c_time;
+					c[23] = c_time>>8;
+					c[24] = c_date;
+					c[25] = c_date>>8;
 
 					c[26] = (clusterno[0] &  0x00ff);
 					c[27] = ((clusterno[0] & 0xff00)>>8);
