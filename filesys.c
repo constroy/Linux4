@@ -31,7 +31,7 @@
 */
 
 #define RevByte(low,high) ((high)<<8|(low))
-#define RevWord(lowest,lower,higher,highest) ((highest)<< 24|(higher)<<16|(lower)<<8|lowest) 
+#define RevWord(lowest,lower,higher,highest) ((highest)<< 24|(higher)<<16|(lower)<<8|(lowest)) 
 
 /* 位置量 */
 int data_offset;
