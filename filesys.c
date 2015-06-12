@@ -1,11 +1,11 @@
-﻿#include<stdio.h>
-#include<unistd.h>
-#include<stdlib.h>
-#include<sys/types.h>
-#include<sys/stat.h>
-#include<fcntl.h>
-#include<string.h>
-#include<ctype.h>
+﻿#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <string.h>
+#include <ctype.h>
 #include "filesys.h"
 
 /*
@@ -33,6 +33,11 @@
 #define RevByte(low,high) ((high)<<8|(low))
 #define RevWord(lowest,lower,higher,highest) ((highest)<< 24|(higher)<<16|(lower)<<8|lowest) 
 
+/* 位置量 */
+int data_offset;
+int rootdir_offset;
+int fat_offset[MAX_FATS];
+
 /*
  *读取BootSector，获取FAT16的格式信息
  *打印启动项记录
@@ -55,13 +60,20 @@ void ScanBootSector()
 	bdptor.FATs = buf[0x10];
 	bdptor.RootDirEntries = RevByte(buf[0x11],buf[0x12]);    
 	bdptor.LogicSectors = RevByte(buf[0x13],buf[0x14]);
+	bdptor.LogicSectors = RevByte(buf[0x13],buf[0x14]);
+	if (bdptor.LogicSectors == 0)
+        	bdptor.LogicSectors =RevWord(buf[0x20],buf[0x21],buf[0x22],buf[0x23]);
 	bdptor.MediaType = buf[0x15];
 	bdptor.SectorsPerFAT = RevByte( buf[0x16],buf[0x17] );
 	bdptor.SectorsPerTrack = RevByte(buf[0x18],buf[0x19]);
 	bdptor.Heads = RevByte(buf[0x1a],buf[0x1b]);
 	bdptor.HiddenSectors = RevByte(buf[0x1c],buf[0x1d]);
-
 	
+	rootdir_offset = (bdptor.ReservedSectors + bdptor.FATs * bdptor.SectorsPerFAT) * bdptor.BytesPerSector;
+	data_offset = rootdir_offset + bdptor.RootDirEntries * DIR_ENTRY_SIZE;
+	fat_offset[0] = bdptor.ReservedSectors * bdptor.BytesPerSector;
+	for (i = 1; i < bdptor.FATs; ++i)
+		fat_offset[i] = fat_offset[i-1] + bdptor.SectorsPerFAT * bdptor.BytesPerSector;
 	printf("Oem_name \t\t%s\n"
 		"BytesPerSector \t\t%d\n"
 		"SectorsPerCluster \t%d\n"
@@ -73,7 +85,8 @@ void ScanBootSector()
 		"SectorPerFAT \t\t%d\n"
 		"SectorPerTrack \t\t%d\n"
 		"Heads \t\t\t%d\n"
-		"HiddenSectors \t\t%d\n",
+		"HiddenSectors \t\t%d\n"
+		"ROOTDIR_OFFSET \t\t%d\n",
 		bdptor.Oem_name,
 		bdptor.BytesPerSector,
 		bdptor.SectorsPerCluster,
@@ -85,7 +98,8 @@ void ScanBootSector()
 		bdptor.SectorsPerFAT,
 		bdptor.SectorsPerTrack,
 		bdptor.Heads,
-		bdptor.HiddenSectors);
+		bdptor.HiddenSectors,
+		rootdir_offset);
 }
 
 /*日期*/
@@ -209,13 +223,13 @@ int fd_ls()
 	if(curdir==NULL)  /*显示根目录区*/
 	{
 		/*将fd定位到根目录区的起始地址*/
-		if((ret= lseek(fd,ROOTDIR_OFFSET,SEEK_SET))<0)
+		if((ret= lseek(fd,rootdir_offset,SEEK_SET))<0)
 			perror("lseek ROOTDIR_OFFSET failed");
 
-		offset = ROOTDIR_OFFSET;
+		offset = rootdir_offset;
 
 		/*从根目录区开始遍历，直到数据区起始地址*/
-		while(offset < (DATA_OFFSET))
+		while(offset < (data_offset))
 		{
 			ret = GetEntry(&entry);
 
@@ -240,7 +254,7 @@ int fd_ls()
 
 	else /*显示子目录*/
 	{
-		cluster_addr = DATA_OFFSET + (curdir->FirstCluster-2) * CLUSTER_SIZE ;
+		cluster_addr = data_offset + (curdir->FirstCluster-2) * CLUSTER_SIZE ;
 		if((ret = lseek(fd,cluster_addr,SEEK_SET))<0)
 			perror("lseek cluster_addr failed");
 
@@ -290,12 +304,12 @@ int ScanEntry (char *entryname,struct Entry *pentry,int mode)
 	/*扫描根目录*/
 	if(curdir ==NULL)  
 	{
-		if((ret = lseek(fd,ROOTDIR_OFFSET,SEEK_SET))<0)
+		if((ret = lseek(fd,rootdir_offset,SEEK_SET))<0)
 			perror ("lseek ROOTDIR_OFFSET failed");
-		offset = ROOTDIR_OFFSET;
+		offset = rootdir_offset;
 
 
-		while(offset<DATA_OFFSET)
+		while(offset<data_offset)
 		{
 			ret = GetEntry(pentry);
 			offset +=abs(ret);
@@ -311,7 +325,7 @@ int ScanEntry (char *entryname,struct Entry *pentry,int mode)
 	/*扫描子目录*/
 	else  
 	{
-		cluster_addr = DATA_OFFSET + (curdir->FirstCluster -2)*CLUSTER_SIZE;
+		cluster_addr = data_offset + (curdir->FirstCluster -2)*CLUSTER_SIZE;
 		if((ret = lseek(fd,cluster_addr,SEEK_SET))<0)
 			perror("lseek cluster_addr failed");
 		offset= cluster_addr;
@@ -407,25 +421,19 @@ void ClearFatCluster(unsigned short cluster)
 */
 int WriteFat()
 {
-	if(lseek(fd,FAT_ONE_OFFSET,SEEK_SET)<0)
+	int i;
+	for (i = 0; i < bdptor.FATs; ++i)
 	{
-		perror("lseek failed");
-		return -1;
-	}
-	if(write(fd,fatbuf,512*250)<0)
-	{
-		perror("read failed");
-		return -1;
-	}
-	if(lseek(fd,FAT_TWO_OFFSET,SEEK_SET)<0)
-	{
-		perror("lseek failed");
-		return -1;
-	}
-	if((write(fd,fatbuf,512*250))<0)
-	{
-		perror("read failed");
-		return -1;
+		if(lseek(fd,fat_offset[i],SEEK_SET)<0)
+		{
+			perror("lseek failed");
+			return -1;
+		}
+		if(write(fd,fatbuf,bdptor.SectorsPerFAT*bdptor.BytesPerSector)<0)
+		{
+			perror("read failed");
+			return -1;
+		}
 	}
 	return 1;
 }
@@ -435,15 +443,19 @@ int WriteFat()
 */
 int ReadFat()
 {
-	if(lseek(fd,FAT_ONE_OFFSET,SEEK_SET)<0)
+	int i;
+	for (i = 0; i < bdptor.FATs; ++i)
 	{
-		perror("lseek failed");
-		return -1;
-	}
-	if(read(fd,fatbuf,512*250)<0)
-	{
-		perror("read failed");
-		return -1;
+		if(lseek(fd,fat_offset[i],SEEK_SET)<0)
+		{
+			perror("lseek failed");
+			return -1;
+		}
+		if(read(fd,fatbuf,bdptor.SectorsPerFAT*bdptor.BytesPerSector)<0)
+		{
+			perror("read failed");
+			return -1;
+		}
 	}
 	return 1;
 }
@@ -569,10 +581,10 @@ int fd_cf(char *filename,int size)
 		if(curdir==NULL)  /*往根目录下写文件*/
 		{ 
 
-			if((ret= lseek(fd,ROOTDIR_OFFSET,SEEK_SET))<0)
+			if((ret= lseek(fd,rootdir_offset,SEEK_SET))<0)
 				perror("lseek ROOTDIR_OFFSET failed");
-			offset = ROOTDIR_OFFSET;
-			while(offset < DATA_OFFSET)
+			offset = rootdir_offset;
+			while(offset < data_offset)
 			{
 			  //读取一个条目
 				if((ret = read(fd,buf,DIR_ENTRY_SIZE))<0)
@@ -637,7 +649,7 @@ int fd_cf(char *filename,int size)
 		else 
 		{
 		  //子目录的情况与根目录类似
-			cluster_addr = (curdir->FirstCluster -2 )*CLUSTER_SIZE + DATA_OFFSET;
+			cluster_addr = (curdir->FirstCluster -2 )*CLUSTER_SIZE + data_offset;
 			if((ret= lseek(fd,cluster_addr,SEEK_SET))<0)
 				perror("lseek cluster_addr failed");
 			offset = cluster_addr;
@@ -754,6 +766,3 @@ int main()
 
 	return 0;
 }
-
-
-
