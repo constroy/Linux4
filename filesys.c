@@ -167,18 +167,19 @@ int GetEntry(struct Entry *pentry)
 		perror("read entry failed");
 	count += ret;
 
-	if(buf[0]==0xe5 || buf[0]== 0x00)
+	if(buf[0]==0xe5 || buf[0]==0x00)
 		return -1*count;
 	else
 	{
 		/*长文件名，忽略掉*/
-		while (buf[11]== 0x0f) 
+		while (buf[11]==0x0f) 
 		{
 			if((ret = read(fd,buf,DIR_ENTRY_SIZE))<0)
 				perror("read root dir failed");
 			count += ret;
 		}
-
+		if(buf[0]==0xe5 || buf[0]== 0x00)
+			return -1*count;
 		/*命名格式化，注意结尾的'\0'*/
 		for (i=0 ;i<=10;i++)
 			pentry->short_name[i] = buf[i];
@@ -503,24 +504,25 @@ int fd_df(char *filename,int mode)
 
 	/*扫描当前目录查找文件*/
 	ret = ScanEntry(filename,pentry,mode);
-	if(ret<0)
+	if (pentry->size)
 	{
-		printf("no such file\n");
-		free(pentry);
-		return -1;
-	}
-	/*清除fat表项*/
-	seed = pentry->FirstCluster;
+		if(ret<0)
+		{
+			printf("no such file\n");
+			free(pentry);
+			return -1;
+		}
+		/*清除fat表项*/
+		seed = pentry->FirstCluster;
+		while(0xfff8 <= seed && seed <= 0xffff)
+		{
+			next = GetFatCluster(seed);
+			ClearFatCluster(seed);
+			seed = next;
 
-	while(seed != 0xffff)
-	{
-		next = GetFatCluster(seed);
+		}
 		ClearFatCluster(seed);
-		seed = next;
-
 	}
-	ClearFatCluster(seed);
-
 	/*清除目录表项*/
 	c=0xe5;//e5表示该目录项可用
 
@@ -529,7 +531,8 @@ int fd_df(char *filename,int mode)
 		perror("lseek fd_df failed");
 	//标记目录表项可用
 	if(write(fd,&c,1)<0)
-		perror("write failed");  
+		perror("write failed");
+	
 
 	/*
         这段话在源程序中存在，但助教感觉这句话是错的。。。o(╯□╰)o
@@ -538,7 +541,6 @@ int fd_df(char *filename,int mode)
 		perror("lseek fd_df failed");
 	if(write(fd,&c,1)<0)
 	perror("write failed");*/
-
 	free(pentry);
 	if(WriteFat()<0)
 		exit(1);
@@ -579,34 +581,37 @@ int fd_cf(char *filename,int size,unsigned char attr)
 	ret = ScanEntry(filename,pentry,0);
 	if (ret<0)
 	{
-		/*查询fat表，找到空白簇，保存在clusterno[]中*/
-		for(cluster=2;cluster<1000;cluster++)
+		if (size)
 		{
-			if(i==clustersize)
-				break;
-			index = cluster * 2;
-			if(fatbuf[index]==0x00&&fatbuf[index+1]==0x00)
+			/*查询fat表，找到空白簇，保存在clusterno[]中*/
+			for(cluster=2;cluster<1000;cluster++)
 			{
-				clusterno[i++] = cluster;
-
 				if(i==clustersize)
 					break;
+				index = cluster * 2;
+				if(fatbuf[index]==0x00&&fatbuf[index+1]==0x00)
+				{
+					clusterno[i++] = cluster;
+
+					if(i==clustersize)
+						break;
+				}
+
 			}
 
-		}
+			/*在fat表中写入下一簇信息*/
+			for(i=0;i<clustersize-1;i++)
+			{
+				index = clusterno[i]*2;
 
-		/*在fat表中写入下一簇信息*/
-		for(i=0;i<clustersize-1;i++)
-		{
+				fatbuf[index] = (clusterno[i+1] &  0x00ff);
+				fatbuf[index+1] = ((clusterno[i+1] & 0xff00)>>8);
+			}
+			/*最后一簇写入0xffff*/
 			index = clusterno[i]*2;
-
-			fatbuf[index] = (clusterno[i+1] &  0x00ff);
-			fatbuf[index+1] = ((clusterno[i+1] & 0xff00)>>8);
+			fatbuf[index] = 0xff;
+			fatbuf[index+1] = 0xff;
 		}
-		/*最后一簇写入0xffff*/
-		index = clusterno[i]*2;
-		fatbuf[index] = 0xff;
-		fatbuf[index+1] = 0xff;
 
 		if(curdir==NULL)  /*往根目录下写文件*/
 		{ 
