@@ -70,8 +70,8 @@ struct Entry{
 //下面这些函数的作用我写到.c文件中了。
 int fd_ls();
 int fd_cd(char *dir);
-int fd_df(char *file_name);
-int fd_cf(char *file_name,int size);
+int fd_df(char *file_name,int mode);
+int fd_cf(char *file_name,int size,unsigned char attr);
 
 void findDate(unsigned short *year,
 			  unsigned short *month,
@@ -98,7 +98,7 @@ struct Entry *curdir = NULL;//当前所在的目录，默认NULL表示位于根�
 int dirno = 0;/*代表目录的层数*/
 struct Entry* fatherdir[10];
 
-unsigned char fatbuf[512*250];  
+unsigned char fatbuf[512*256];  
 
 #endif
 

@@ -31,8 +31,14 @@
     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+ 
 */
 
-#define RevByte(low,high) ((high)<<8|(low))
-#define RevWord(lowest,lower,higher,highest) ((highest)<< 24|(higher)<<16|(lower)<<8|(lowest)) 
+unsigned short RevByte(unsigned short low,unsigned short high)
+{
+	return high<<8 | low;
+}
+unsigned RevWord(unsigned lowest,unsigned lower,unsigned higher,unsigned highest)
+{
+	return highest<<24 | higher<<16 | lower <<8 | lowest;
+}
 
 /* 位置量 */
 int data_offset;
@@ -109,7 +115,7 @@ void findDate(unsigned short *year,
 			  unsigned short *day,
 			  unsigned char info[2])
 {
-	int date;
+	unsigned short date;
 	date = RevByte(info[0],info[1]);
 
 	*year = ((date & MASK_YEAR)>>9)+1980;
@@ -123,7 +129,7 @@ void findTime(unsigned short *hour,
 			  unsigned short *sec,
 			  unsigned char info[2])
 {
-	int time;
+	unsigned short time;
 	time = RevByte(info[0],info[1]);
 
 	*hour = ((time & MASK_HOUR)>>11);
@@ -385,7 +391,24 @@ int fd_cd(char *dir)
 	curdir = pentry;
 	return 1;
 }
-
+void fd_cd_path(char *path)
+{
+	char *p = path,*q;
+	if (*p == '/')
+	{
+		curdir = NULL;
+		++p;
+	}
+	LOOP:
+	{
+		q = strchr(p,'/');
+		if (q) *q='\0';
+		fd_cd(p);
+		if (!q) return;
+		p=q+1;
+	}
+	goto LOOP;
+}
 /*
 *参数：prev，类型：unsigned char
 *返回值：下一簇
@@ -469,7 +492,7 @@ int ReadFat()
 *返回值：1，成功；-1，失败
 *功能;删除当前目录下的文件
 */
-int fd_df(char *filename)
+int fd_df(char *filename,int mode)
 {
 	struct Entry *pentry;
 	int ret;
@@ -479,24 +502,24 @@ int fd_df(char *filename)
 	pentry = (struct Entry*)malloc(sizeof(struct Entry));
 
 	/*扫描当前目录查找文件*/
-	ret = ScanEntry(filename,pentry,0);
+	ret = ScanEntry(filename,pentry,mode);
 	if(ret<0)
 	{
 		printf("no such file\n");
 		free(pentry);
 		return -1;
 	}
-
 	/*清除fat表项*/
 	seed = pentry->FirstCluster;
-	while((next = GetFatCluster(seed))!=0xffff)
+
+	while(seed != 0xffff)
 	{
+		next = GetFatCluster(seed);
 		ClearFatCluster(seed);
 		seed = next;
 
 	}
-
-	ClearFatCluster( seed );
+	ClearFatCluster(seed);
 
 	/*清除目录表项*/
 	c=0xe5;//e5表示该目录项可用
@@ -529,12 +552,12 @@ size，    类型：int，文件的大小
 *返回值：1，成功；-1，失败
 *功能：在当前目录下创建文件
 */
-int fd_cf(char *filename,int size)
+int fd_cf(char *filename,int size,unsigned char attr)
 {
 
 	struct Entry *pentry;
 	int ret,i=0,cluster_addr,offset;
-	unsigned short c_date,c_time,cluster,clusterno[100];
+	unsigned short c_date,c_time,cluster,clusterno[100]={0};
 	unsigned char c[DIR_ENTRY_SIZE];
 	int index,clustersize;
 	unsigned char buf[DIR_ENTRY_SIZE];
@@ -548,9 +571,9 @@ int fd_cf(char *filename,int size)
 		clustersize ++;
 
 	t = time(NULL);
-	tp = localtime(&t);
-	c_date = (tp->tm_year-80<<9) | (tp->tm_mon+1<<5) | (tp->tm_mday);
-	c_time = (tp->tm_hour<<11) | (tp->tm_min<<5) | (tp->tm_sec>>1);
+	tp = gmtime(&t);
+	c_date = ((unsigned short)tp->tm_year-80u<<9) | ((unsigned short)tp->tm_mon+1u<<5) | ((unsigned short)tp->tm_mday);
+	c_time = ((unsigned short)tp->tm_hour<<11) | ((unsigned short)tp->tm_min<<5) | ((unsigned short)tp->tm_sec>>1);
 	
 	//扫描根目录，是否已存在该文件名
 	ret = ScanEntry(filename,pentry,0);
@@ -559,6 +582,8 @@ int fd_cf(char *filename,int size)
 		/*查询fat表，找到空白簇，保存在clusterno[]中*/
 		for(cluster=2;cluster<1000;cluster++)
 		{
+			if(i==clustersize)
+				break;
 			index = cluster * 2;
 			if(fatbuf[index]==0x00&&fatbuf[index+1]==0x00)
 			{
@@ -577,8 +602,6 @@ int fd_cf(char *filename,int size)
 
 			fatbuf[index] = (clusterno[i+1] &  0x00ff);
 			fatbuf[index+1] = ((clusterno[i+1] & 0xff00)>>8);
-
-
 		}
 		/*最后一簇写入0xffff*/
 		index = clusterno[i]*2;
@@ -622,7 +645,7 @@ int fd_cf(char *filename,int size)
 					for(;i<=10;i++)
 						c[i]=' ';
 
-					c[11] = 0x00;
+					c[11] = attr;
 
 					/* write the time and date */
 					c[22] = c_time;
@@ -692,7 +715,7 @@ int fd_cf(char *filename,int size)
 					for(;i<=10;i++)
 						c[i]=' ';
 
-					c[11] = 0x00;
+					c[11] = attr;
 					
 					c[22] = c_time;
 					c[23] = c_time>>8;
@@ -764,22 +787,34 @@ int main()
 		else if(strcmp(input, "cd") == 0)
 		{
 			scanf("%s", name);
-			fd_cd(name);
+			fd_cd_path(name);
 		}
 		else if(strcmp(input, "df") == 0)
 		{
 			scanf("%s", name);
-			fd_df(name);
+			fd_df(name,0);
 		}
 		else if(strcmp(input, "cf") == 0)
 		{
 			scanf("%s", name);
 			scanf("%s", input);
 			size = atoi(input);
-			fd_cf(name,size);
+			fd_cf(name,size,0);
+		}
+		else if(strcmp(input, "mkdir") == 0)
+		{
+			scanf("%s", name);
+			fd_cf(name,CLUSTER_SIZE,ATTR_SUBDIR);
+		}
+		else if(strcmp(input, "rmdir") == 0)
+		{
+			scanf("%s", name);
+			fd_df(name,1);
 		}
 		else
+		{
 			do_usage();
+		}
 	}	
 
 	return 0;
