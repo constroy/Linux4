@@ -500,21 +500,55 @@ int fd_df(char *filename,int mode)
 	unsigned char c;
 	unsigned short seed,next;
 
+	if (!strcmp(filename,".") || !strcmp(filename,".."))
+	{
+		puts("refusing to remove ‘.’ or ‘..’ directory");
+		return -1;
+	}
+			
 	pentry = (struct Entry*)malloc(sizeof(struct Entry));
-
+	
 	/*扫描当前目录查找文件*/
 	ret = ScanEntry(filename,pentry,mode);
+	
+	if(ret<0)
+	{
+		printf("no such file %s\n",filename);
+		free(pentry);
+		return -1;
+	}
+	if (mode)
+	{
+		struct Entry *tmp = curdir,entry;
+		int ret,begin,end,offset;
+		
+		fd_cd(filename);
+		
+		begin = data_offset + (curdir->FirstCluster-2) * CLUSTER_SIZE;
+		end = begin + CLUSTER_SIZE;
+		offset = begin;
+		
+		while (offset < end)
+		{
+			if((ret = lseek(fd,offset,SEEK_SET))<0)
+				perror("lseek begin cluster failed");
+			ret = GetEntry(&entry);
+			offset += abs(ret);
+			//printf("%d %d\n",offset,end);
+			if (ret > 0)
+			{
+				//printf("entry: %s %d\n",entry.short_name,entry.subdir);
+				if (strcmp(entry.short_name,".") && strcmp(entry.short_name,".."))
+					fd_df(entry.short_name,entry.subdir);
+			}
+		}
+		curdir = tmp;
+	}
 	if (pentry->size)
 	{
-		if(ret<0)
-		{
-			printf("no such file\n");
-			free(pentry);
-			return -1;
-		}
 		/*清除fat表项*/
 		seed = pentry->FirstCluster;
-		while(0xfff8 <= seed && seed <= 0xffff)
+		while(seed < 0xfff8)
 		{
 			next = GetFatCluster(seed);
 			ClearFatCluster(seed);
